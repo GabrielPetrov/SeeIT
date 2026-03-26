@@ -1,69 +1,48 @@
-#include "BluetoothSerial.h"
+#include <BleKeyboard.h>
 
-#define BUTTON_PIN 15
+#define BUTTON_PIN 4
 
-BluetoothSerial SerialBT;
+BleKeyboard bleKeyboard("ESP32_KEYB", "Gabriel", 100);
 
-volatile bool buttonEvent = false;
-volatile bool buttonPressed = false;
-volatile unsigned long lastInterruptTime = 0;
-
-const unsigned long debounceDelay = 50;
-
-bool btConnected = false;
-
-void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
-  if (event == ESP_SPP_SRV_OPEN_EVT) {
-    btConnected = true;
-    Serial.println("Bluetooth client CONNECTED");
-  }
-  else if (event == ESP_SPP_CLOSE_EVT) {
-    btConnected = false;
-    Serial.println("Bluetooth client DISCONNECTED");
-  }
-}
-
-void IRAM_ATTR handleButtonInterrupt() {
-  unsigned long currentTime = millis();
-
-  if (currentTime - lastInterruptTime > debounceDelay) {
-    buttonPressed = (digitalRead(BUTTON_PIN) == LOW);
-    buttonEvent = true;
-    lastInterruptTime = currentTime;
-  }
-}
+bool lastReading = HIGH;
+bool stableState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 30;
 
 void setup() {
-  Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  if (!SerialBT.begin("ESP32_Button")) {
-    Serial.println("Bluetooth start failed");
-    while (true) delay(1000);
-  }
-
-  // Register callback
-  SerialBT.register_callback(btCallback);
-
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, CHANGE);
-
-  Serial.println("ESP32 Bluetooth sender started");
-  Serial.println("Waiting for client connection...");
+  Serial.begin(115200);
+  Serial.println("Starting BLE keyboard...");
+  bleKeyboard.begin();
 }
 
 void loop() {
-  if (buttonEvent) {
-    noInterrupts(); 
-    bool pressed = buttonPressed;
-    buttonEvent = false;
-    interrupts();
+  bool reading = digitalRead(BUTTON_PIN);
 
-    if (pressed) {
-      Serial.println("Button PRESSED");
-      if (btConnected) SerialBT.println("PRESSED");
-    } else {
-      Serial.println("Button RELEASED");
-      if (btConnected) SerialBT.println("RELEASED");
+  if (reading != lastReading) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != stableState) {
+      stableState = reading;
+
+      if (stableState == LOW) {
+        if (bleKeyboard.isConnected()) {
+          Serial.println("Sending key_combo");
+          bleKeyboard.press(KEY_LEFT_CTRL);
+          bleKeyboard.press(KEY_LEFT_ALT);
+          bleKeyboard.press('p');
+          delay(50);
+          bleKeyboard.releaseAll();
+        } else {
+          Serial.println("BLE not connected");
+        }
+      }
     }
   }
+
+  lastReading = reading;
+  delay(5);
 }
