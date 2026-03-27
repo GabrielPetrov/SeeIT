@@ -1,6 +1,7 @@
 #include <BleKeyboard.h>
 
 #define BUTTON_PIN 4
+#define GND_PIN 13
 
 BleKeyboard bleKeyboard("ESP32_KEYB", "Gabriel", 100);
 
@@ -11,6 +12,8 @@ const unsigned long debounceDelay = 30;
 
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(GND_PIN, OUTPUT);
+  digitalWrite(GND_PIN, LOW);
 
   Serial.begin(115200);
   Serial.println("Starting BLE keyboard...");
