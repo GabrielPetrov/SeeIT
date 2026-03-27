@@ -1,6 +1,3 @@
-# Raspberry Pi can call:
-#   http://<ip>:8000/detect
-
 import math
 import os
 from typing import Optional, Tuple, List, Dict, Any
@@ -22,7 +19,6 @@ YOLO_CONF = float(os.environ.get("BALL_DETECT_CONF", "0.12"))
 
 app = FastAPI(title="Ball Closest Object Detector")
 
-# Load model once at startup for better performance
 model = YOLO(MODEL_PATH)
 
 UPLOAD_DIR = Path("uploads")
@@ -242,17 +238,96 @@ def choose_object(ball, detections):
     candidates.sort(key=lambda x: (x["ball_dist"], -x["conf"]))
     return candidates[0]
 
+def choose_ball_from_yolo(result, model):
+    """
+    Find the best YOLO 'sports ball' detection and convert it
+    into the same ball structure used by the rest of the code.
+    """
+    balls = []
+
+    if result.boxes is None:
+        return None
+
+    for box in result.boxes:
+        cls_id = int(box.cls[0].item())
+        conf = float(box.conf[0].item())
+        name = model.names[cls_id]
+
+        if name != "sports ball":
+            continue
+
+        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        radius = int(min(x2 - x1, y2 - y1) / 2)
+
+        balls.append({
+            "center": (cx, cy),
+            "radius": radius,
+            "bbox": (x1, y1, x2, y2),
+            "conf": conf,
+        })
+
+    if not balls:
+        return None
+
+    # choose the most confident sports ball
+    balls.sort(key=lambda b: b["conf"], reverse=True)
+    return balls[0]
+
+# def run_detection(image: np.ndarray) -> Dict[str, Any]:
+#     if image is None:
+#         raise ValueError("Invalid image")
+
+#     ball, stick = choose_ball_using_stick(image)
+#     if ball is None:
+#         return {
+#             "success": False,
+#             "error": "ball_not_detected"
+#         }
+
+#     results = model.predict(source=image, conf=YOLO_CONF, save=False, verbose=False)
+#     if not results:
+#         return {
+#             "success": False,
+#             "error": "no_yolo_results"
+#         }
+
+#     result = results[0]
+#     detections = []
+
+#     if result.boxes is not None:
+#         for box in result.boxes:
+#             cls_id = int(box.cls[0].item())
+#             conf = float(box.conf[0].item())
+#             name = model.names[cls_id]
+
+#             if name in IGNORE_CLASSES:
+#                 continue
+
+#             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+#             detections.append({
+#                 "name": name,
+#                 "conf": conf,
+#                 "box": (x1, y1, x2, y2),
+#             })
+
+#     chosen = choose_object(ball, detections)
+
+#     response = {
+#         "success": True,
+#         "ball_center": {"x": int(ball["center"][0]), "y": int(ball["center"][1])},
+#         "ball_radius": int(ball["radius"]),
+#         "closest_object": chosen["name"] if chosen else None,
+#         "distance_px": float(chosen["ball_dist"]) if chosen else None,
+#     }
+
+#     return response
 
 def run_detection(image: np.ndarray) -> Dict[str, Any]:
     if image is None:
         raise ValueError("Invalid image")
-
-    ball, stick = choose_ball_using_stick(image)
-    if ball is None:
-        return {
-            "success": False,
-            "error": "ball_not_detected"
-        }
 
     results = model.predict(source=image, conf=YOLO_CONF, save=False, verbose=False)
     if not results:
@@ -262,6 +337,14 @@ def run_detection(image: np.ndarray) -> Dict[str, Any]:
         }
 
     result = results[0]
+
+    ball = choose_ball_from_yolo(result, model)
+    if ball is None:
+        return {
+            "success": False,
+            "error": "sports_ball_not_detected"
+        }
+
     detections = []
 
     if result.boxes is not None:
@@ -288,6 +371,7 @@ def run_detection(image: np.ndarray) -> Dict[str, Any]:
         "ball_radius": int(ball["radius"]),
         "closest_object": chosen["name"] if chosen else None,
         "distance_px": float(chosen["ball_dist"]) if chosen else None,
+        "ball_conf": float(ball["conf"]),
     }
 
     return response
@@ -309,7 +393,6 @@ def root():
 
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
-    # Simple content-type guard
     if file.content_type and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file is not an image")
 
@@ -346,19 +429,88 @@ async def detect(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# def run_detection_with_debug(image: np.ndarray):
+#     if image is None:
+#         raise ValueError("Invalid image")
+
+#     ball, stick = choose_ball_using_stick(image)
+#     if ball is None:
+#         return {"success": False, "error": "ball_not_detected"}, image
+
+#     results = model.predict(source=image, conf=YOLO_CONF, save=False, verbose=False)
+#     if not results:
+#         return {"success": False, "error": "no_yolo_results"}, image
+
+#     result = results[0]
+#     detections = []
+
+#     if result.boxes is not None:
+#         for box in result.boxes:
+#             cls_id = int(box.cls[0].item())
+#             conf = float(box.conf[0].item())
+#             name = model.names[cls_id]
+#             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+#             detections.append({
+#                 "name": name,
+#                 "conf": conf,
+#                 "box": (x1, y1, x2, y2),
+#             })
+
+#     chosen = choose_object(ball, detections)
+
+#     display = image.copy()
+
+#     for det in detections:
+#         x1, y1, x2, y2 = det["box"]
+#         cv2.rectangle(display, (x1, y1), (x2, y2), (130, 130, 255), 2)
+#         cv2.putText(
+#             display,
+#             f"{det['name']} {det['conf']:.2f}",
+#             (x1, max(20, y1 - 6)),
+#             cv2.FONT_HERSHEY_SIMPLEX,
+#             0.5,
+#             (130, 130, 255),
+#             1,
+#             cv2.LINE_AA,
+#         )
+
+#     if stick is not None:
+#         (sx1, sy1), (sx2, sy2) = stick
+#         cv2.line(display, (sx1, sy1), (sx2, sy2), (0, 0, 255), 2)
+
+#     bx, by = ball["center"]
+#     br = ball["radius"]
+#     cv2.circle(display, (bx, by), br, (0, 255, 0), 2)
+#     cv2.circle(display, (bx, by), 4, (255, 0, 255), -1)
+
+#     if chosen is not None:
+#         x1, y1, x2, y2 = chosen["box"]
+#         cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 255), 3)
+
+#     response = {
+#         "success": True,
+#         "closest_object": chosen["name"] if chosen else None,
+#         "distance_px": float(chosen["ball_dist"]) if chosen else None,
+#         "ball_center": {"x": int(bx), "y": int(by)},
+#         "ball_radius": int(br),
+#     }
+
+#     return response, display
+
 def run_detection_with_debug(image: np.ndarray):
     if image is None:
         raise ValueError("Invalid image")
-
-    ball, stick = choose_ball_using_stick(image)
-    if ball is None:
-        return {"success": False, "error": "ball_not_detected"}, image
 
     results = model.predict(source=image, conf=YOLO_CONF, save=False, verbose=False)
     if not results:
         return {"success": False, "error": "no_yolo_results"}, image
 
     result = results[0]
+
+    ball = choose_ball_from_yolo(result, model)
+    if ball is None:
+        return {"success": False, "error": "sports_ball_not_detected"}, image
+
     detections = []
 
     if result.boxes is not None:
@@ -366,6 +518,10 @@ def run_detection_with_debug(image: np.ndarray):
             cls_id = int(box.cls[0].item())
             conf = float(box.conf[0].item())
             name = model.names[cls_id]
+
+            if name in IGNORE_CLASSES:
+                continue
+
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             detections.append({
                 "name": name,
@@ -391,18 +547,42 @@ def run_detection_with_debug(image: np.ndarray):
             cv2.LINE_AA,
         )
 
-    if stick is not None:
-        (sx1, sy1), (sx2, sy2) = stick
-        cv2.line(display, (sx1, sy1), (sx2, sy2), (0, 0, 255), 2)
-
     bx, by = ball["center"]
     br = ball["radius"]
+    x1b, y1b, x2b, y2b = ball["bbox"]
+
+    cv2.rectangle(display, (x1b, y1b), (x2b, y2b), (0, 255, 0), 2)
     cv2.circle(display, (bx, by), br, (0, 255, 0), 2)
     cv2.circle(display, (bx, by), 4, (255, 0, 255), -1)
+    cv2.putText(
+        display,
+        f"YOLO ball {ball['conf']:.2f}",
+        (x1b, max(20, y1b - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
 
     if chosen is not None:
         x1, y1, x2, y2 = chosen["box"]
         cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 255), 3)
+
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        cv2.line(display, (bx, by), (cx, cy), (255, 0, 0), 2)
+
+        cv2.putText(
+            display,
+            f"Closest: {chosen['name']}",
+            (x1, max(30, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
     response = {
         "success": True,
@@ -410,10 +590,10 @@ def run_detection_with_debug(image: np.ndarray):
         "distance_px": float(chosen["ball_dist"]) if chosen else None,
         "ball_center": {"x": int(bx), "y": int(by)},
         "ball_radius": int(br),
+        "ball_conf": float(ball["conf"]),
     }
 
     return response, display
-
 
 if __name__ == "__main__":
     uvicorn.run("yolo_web_server:app", host="0.0.0.0", port=8000)
